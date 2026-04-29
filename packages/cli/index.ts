@@ -6,6 +6,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+// This is the executable starts the Gemini CLI. It has two modes:
+// 1. Parent Process Mode: A lightweight process that handles relaunching the child process when needed.
+// 2. Child Process Mode: The main CLI logic runs here, with all dependencies loaded.
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import v8 from 'node:v8';
@@ -81,25 +84,33 @@ async function run() {
 
     const scriptArgs = getScriptArgs();
     const memoryArgs = await getMemoryNodeArgs();
+
+    // Comment: getSpawnConfig constructs the arguments and environment for spawning a child process during relaunch.
     const { spawnArgs, env: newEnv } = getSpawnConfig(memoryArgs, scriptArgs);
 
     let latestAdminSettings: unknown = undefined;
 
     // Prevent the parent process from exiting prematurely on signals.
     // The child process will receive the same signals and handle its own cleanup.
+    // Comment: do nothing on these signals to keep the parent process alive until the child exits.
     for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
       process.on(sig as NodeJS.Signals, () => {});
     }
 
+    // Comment: runner is an async function that spawns the child process and waits for it to exit.
     const runner = () => {
+      // Comment: We pause stdin in the parent process to prevent it from interfering with the child process's input handling.
       process.stdin.pause();
 
+      // Comment: creating clone of current application with the same execPath and arguments, but with an updated environment variable to prevent infinite relaunch loops.
       const child = spawn(process.execPath, spawnArgs, {
+        // Comment: stdio option configures the pipe between the parent and child processes. 'inherit' means the child process shares the same stdio streams as the parent, allowing it to read from stdin and write to stdout/stderr directly. 'ipc' enables an additional communication channel for sending messages between the parent and child. Each index in the array means: 0 - stdin, 1 - stdout, 2 - stderr, 3 - ipc channel.
         stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
         env: newEnv,
       });
 
       if (latestAdminSettings) {
+        // Comment: If we already have admin settings (from a previous child process), send them to the new child immediately after it starts. This ensures that the child has the latest settings without waiting for the next update.
         child.send({ type: 'admin-settings', settings: latestAdminSettings });
       }
 
@@ -117,6 +128,7 @@ async function run() {
           resolve(1);
         });
         child.on('close', (code) => {
+          // Comment: When the child process exits, we resolve the promise with its exit code. We also resume stdin in the parent process to allow for any final input if needed before the parent exits or relaunches.
           process.stdin.resume();
           resolve(code ?? 1);
         });
@@ -140,6 +152,7 @@ async function run() {
   } else {
     // --- Heavy Child Process ---
     // Now we can safely import everything.
+    // Comment: gemini.js contains the main logic of the CLI, while utils/cleanup.js has functions for cleaning up resources on exit. @google/gemini-cli-core provides core utilities and error classes used across the CLI.
     const { main } = await import('./src/gemini.js');
     const { FatalError, writeToStderr } = await import(
       '@google/gemini-cli-core'
